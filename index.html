@@ -17,13 +17,15 @@
             }
         </style>
     </head>
-
     <body>
         <main>
-            <div id="container">
-                <canvas id="root" style="width: 640px; height: 512px"></canvas>
-                <div id="overlay"></div>
-            </div>
+            <canvas
+                id="root"
+                style="width: 960px"
+                width="1280"
+                height="1024"
+            ></canvas>
+            <!--        <canvas id="root" style="width: 80px; height: 80px" width="80" height="80"></canvas>-->
             <div id="ui-inventory"></div>
             <div id="ui-root"></div>
         </main>
@@ -44,6 +46,8 @@
             // A [bad] [partial] reimplementation of the excellent lodash
             function _() {}
 
+            _.scale = (x, inMin, inMax, outMin, outMax) =>
+                ((x - inMin) * (outMax - outMin)) / (inMax - inMin) + outMin
             _.deg2rad = (deg) => deg * (Math.PI / 180)
 
             _.contains = function (container, needle) {
@@ -261,6 +265,10 @@
                         el.addEventListener(attr.substring(2), val)
                         continue
                     }
+                    if (attr.startsWith('$')) {
+                        if (val) el.setAttribute(attr.substring(1), '')
+                        continue
+                    }
                     el.setAttribute(attr, val)
                 }
 
@@ -335,32 +343,19 @@
                 get length() {
                     return this.remainingPath.length
                 }
+
+                drawRemaining(ctx) {
+                    for (let square of this.remainingPath ?? []) {
+                        ctx.drawImage(
+                            AssetManager.assets.debugOverlay,
+                            square[0] * 64,
+                            square[1] * 64
+                        )
+                    }
+                }
             }
 
-            function astar(start, end, cost, world) {
-                if (world.get(...end)) {
-                    if (!(world.get(...end) instanceof Player)) return null
-                }
-
-                function path(cameFrom, current) {
-                    let totalPath = [current]
-                    while (cameFrom[current]) {
-                        current = cameFrom[current]
-                        totalPath.unshift(current)
-                    }
-                    return totalPath
-                }
-
-                let open = [start]
-                let closed = []
-                let cameFrom = {}
-
-                let gScore = {}
-                gScore[start] = 0
-
-                let fScore = {}
-                fScore[start] = cost(start, end)
-
+            function astarSimple(start, end, world) {
                 function neighbors(pos) {
                     return [
                         [pos[0] - 1, pos[1]],
@@ -384,6 +379,33 @@
                         })
                 }
 
+                if (world.get(...end)) {
+                    if (!(world.get(...end) instanceof Player)) return null
+                }
+
+                return astar(start, end, manhattan, () => 1, neighbors, world)
+            }
+
+            function astar(start, end, distance, cost, neighbors, gas) {
+                function path(cameFrom, current) {
+                    let totalPath = [current]
+                    while (cameFrom[current]) {
+                        current = cameFrom[current]
+                        totalPath.unshift(current)
+                    }
+                    return new Path(totalPath)
+                }
+
+                let open = [start]
+                let closed = []
+                let cameFrom = {}
+
+                let gScore = {}
+                gScore[start] = 0
+
+                let fScore = {}
+                fScore[start] = distance(start, end)
+
                 function lowestFscore(candidates) {
                     let lowest = Infinity
                     let val = null
@@ -397,12 +419,12 @@
                     return val
                 }
 
-                let gas = 500
+                gas ??= 500
                 while (open.length !== 0) {
                     if (gas < 0) throw 'Ran out of gas'
                     let current = lowestFscore(open) // the node in openSet having the lowest fScore[] value
                     if (_.equals(current, end)) {
-                        return new Path(path(cameFrom, current))
+                        return path(cameFrom, current)
                     }
 
                     open.removeElement(current)
@@ -412,11 +434,13 @@
                             gas -= 1
                             continue
                         }
-                        let tent = gScore[current] ?? Infinity
+                        let tent =
+                            (gScore[current] ?? Infinity) +
+                            cost(current, neighbor)
                         if (tent < (gScore[neighbor] ?? Infinity)) {
                             cameFrom[neighbor] = current
                             gScore[neighbor] = tent
-                            fScore[neighbor] = tent + cost(neighbor, end)
+                            fScore[neighbor] = tent + distance(neighbor, end)
                             if (!_.contains(open, neighbor)) {
                                 open.push(neighbor)
                                 gas -= 4
@@ -502,12 +526,258 @@
                     }
                 }
             }
+
+            function bicubicInterpolator(vals, { translateX, translateY }) {
+                const a00 = vals[1][1],
+                    a01 = (-1 / 2) * vals[1][0] + (1 / 2) * vals[1][2],
+                    a02 =
+                        vals[1][0] +
+                        (-5 / 2) * vals[1][1] +
+                        2 * vals[1][2] +
+                        (-1 / 2) * vals[1][3],
+                    a03 =
+                        (-1 / 2) * vals[1][0] +
+                        (3 / 2) * vals[1][1] +
+                        (-3 / 2) * vals[1][2] +
+                        (1 / 2) * vals[1][3],
+                    a10 = (-1 / 2) * vals[0][1] + (1 / 2) * vals[2][1],
+                    a11 =
+                        (1 / 4) * vals[0][0] +
+                        (-1 / 4) * vals[0][2] +
+                        (-1 / 4) * vals[2][0] +
+                        (1 / 4) * vals[2][2],
+                    a12 =
+                        (-1 / 2) * vals[0][0] +
+                        (5 / 4) * vals[0][1] +
+                        -1 * vals[0][2] +
+                        (1 / 4) * vals[0][3] +
+                        (1 / 2) * vals[2][0] +
+                        (-5 / 4) * vals[2][1] +
+                        vals[2][2] +
+                        (-1 / 4) * vals[2][3],
+                    a13 =
+                        (1 / 4) * vals[0][0] +
+                        (-3 / 4) * vals[0][1] +
+                        (3 / 4) * vals[0][2] +
+                        (-1 / 4) * vals[0][3] +
+                        (-1 / 4) * vals[2][0] +
+                        (3 / 4) * vals[2][1] +
+                        (-3 / 4) * vals[2][2] +
+                        (1 / 4) * vals[2][3],
+                    a20 =
+                        vals[0][1] +
+                        (-5 / 2) * vals[1][1] +
+                        2 * vals[2][1] +
+                        (-1 / 2) * vals[3][1],
+                    a21 =
+                        (-1 / 2) * vals[0][0] +
+                        (1 / 2) * vals[0][2] +
+                        (5 / 4) * vals[1][0] +
+                        (-5 / 4) * vals[1][2] +
+                        -1 * vals[2][0] +
+                        vals[2][2] +
+                        (1 / 4) * vals[3][0] +
+                        (-1 / 4) * vals[3][2],
+                    a22 =
+                        vals[0][0] +
+                        (-5 / 2) * vals[0][1] +
+                        2 * vals[0][2] +
+                        (-1 / 2) * vals[0][3] +
+                        (-5 / 2) * vals[1][0] +
+                        (25 / 4) * vals[1][1] +
+                        -5 * vals[1][2] +
+                        (5 / 4) * vals[1][3] +
+                        2 * vals[2][0] +
+                        -5 * vals[2][1] +
+                        4 * vals[2][2] +
+                        -1 * vals[2][3] +
+                        (-1 / 2) * vals[3][0] +
+                        (5 / 4) * vals[3][1] +
+                        -1 * vals[3][2] +
+                        (1 / 4) * vals[3][3],
+                    a23 =
+                        (-1 / 2) * vals[0][0] +
+                        (3 / 2) * vals[0][1] +
+                        (-3 / 2) * vals[0][2] +
+                        (1 / 2) * vals[0][3] +
+                        (5 / 4) * vals[1][0] +
+                        (-15 / 4) * vals[1][1] +
+                        (15 / 4) * vals[1][2] +
+                        (-5 / 4) * vals[1][3] +
+                        -1 * vals[2][0] +
+                        3 * vals[2][1] +
+                        -3 * vals[2][2] +
+                        vals[2][3] +
+                        (1 / 4) * vals[3][0] +
+                        (-3 / 4) * vals[3][1] +
+                        (3 / 4) * vals[3][2] +
+                        (-1 / 4) * vals[3][3],
+                    a30 =
+                        (-1 / 2) * vals[0][1] +
+                        (3 / 2) * vals[1][1] +
+                        (-3 / 2) * vals[2][1] +
+                        (1 / 2) * vals[3][1],
+                    a31 =
+                        (1 / 4) * vals[0][0] +
+                        (-1 / 4) * vals[0][2] +
+                        (-3 / 4) * vals[1][0] +
+                        (3 / 4) * vals[1][2] +
+                        (3 / 4) * vals[2][0] +
+                        (-3 / 4) * vals[2][2] +
+                        (-1 / 4) * vals[3][0] +
+                        (1 / 4) * vals[3][2],
+                    a32 =
+                        (-1 / 2) * vals[0][0] +
+                        (5 / 4) * vals[0][1] +
+                        -1 * vals[0][2] +
+                        (1 / 4) * vals[0][3] +
+                        (3 / 2) * vals[1][0] +
+                        (-15 / 4) * vals[1][1] +
+                        3 * vals[1][2] +
+                        (-3 / 4) * vals[1][3] +
+                        (-3 / 2) * vals[2][0] +
+                        (15 / 4) * vals[2][1] +
+                        -3 * vals[2][2] +
+                        (3 / 4) * vals[2][3] +
+                        (1 / 2) * vals[3][0] +
+                        (-5 / 4) * vals[3][1] +
+                        vals[3][2] +
+                        (-1 / 4) * vals[3][3],
+                    a33 =
+                        (1 / 4) * vals[0][0] +
+                        (-3 / 4) * vals[0][1] +
+                        (3 / 4) * vals[0][2] +
+                        (-1 / 4) * vals[0][3] +
+                        (-3 / 4) * vals[1][0] +
+                        (9 / 4) * vals[1][1] +
+                        (-9 / 4) * vals[1][2] +
+                        (3 / 4) * vals[1][3] +
+                        (3 / 4) * vals[2][0] +
+                        (-9 / 4) * vals[2][1] +
+                        (9 / 4) * vals[2][2] +
+                        (-3 / 4) * vals[2][3] +
+                        (-1 / 4) * vals[3][0] +
+                        (3 / 4) * vals[3][1] +
+                        (-3 / 4) * vals[3][2] +
+                        (1 / 4) * vals[3][3]
+
+                return (x, y) => {
+                    x = x + translateX ?? 0
+                    y = y + translateY ?? 0
+                    if (x < 0 || y < 0 || x > 1 || y > 1)
+                        throw `oob: (${x}, ${y}) outside of (0, 0) to (1, 1)`
+
+                    const x2 = x * x,
+                        x3 = x * x2,
+                        y2 = y * y,
+                        y3 = y * y2
+
+                    return (
+                        a00 +
+                        a01 * y +
+                        a02 * y2 +
+                        a03 * y3 +
+                        (a10 + a11 * y + a12 * y2 + a13 * y3) * x +
+                        (a20 + a21 * y + a22 * y2 + a23 * y3) * x2 +
+                        (a30 + a31 * y + a32 * y2 + a33 * y3) * x3
+                    )
+                }
+            }
+
+            function bicubicGridInterpolator(values) {
+                const m = values.length
+                const n = values[0].length
+                const interpolators = []
+
+                for (let x of _.range(1, m - 2)) interpolators[x] = []
+
+                return (x, y) => {
+                    if (x < 1 || y < 1 || x > m - 2 || y > n - 2)
+                        throw `oob: (${x}, ${y}) outside of (1,1) to (${
+                            m - 2
+                        }, ${n - 2})`
+
+                    let blX = Math.floor(x)
+                    let blY = Math.floor(y)
+
+                    if (x === m - 2) blX--
+                    if (y === n - 2) blY--
+
+                    if (!interpolators[blX][blY]) {
+                        interpolators[blX][blY] = bicubicInterpolator(
+                            [
+                                [
+                                    values[blX - 1][blY - 1],
+                                    values[blX - 1][blY],
+                                    values[blX - 1][blY + 1],
+                                    values[blX - 1][blY + 2],
+                                ],
+                                [
+                                    values[blX + 0][blY - 1],
+                                    values[blX + 0][blY],
+                                    values[blX][blY + 1],
+                                    values[blX][blY + 2],
+                                ],
+                                [
+                                    values[blX + 1][blY - 1],
+                                    values[blX + 1][blY],
+                                    values[blX + 1][blY + 1],
+                                    values[blX + 1][blY + 2],
+                                ],
+                                [
+                                    values[blX + 2][blY - 1],
+                                    values[blX + 2][blY],
+                                    values[blX + 2][blY + 1],
+                                    values[blX + 2][blY + 2],
+                                ],
+                            ],
+                            {
+                                translateX: -blX,
+                                translateY: -blY,
+                            }
+                        )
+                    }
+                    const interpolator = interpolators[blX][blY]
+                    return interpolator(x, y)
+                }
+            }
+
+            // Supersample a bicubic noise grid to get detailed noise at small scales
+            function bicubicNoiseHelper(
+                noiseWidth,
+                noiseHeight,
+                sampleWidth,
+                sampleHeight
+            ) {
+                // generate pointmap
+                let points = _.range(noiseHeight).map((_i) =>
+                    _.range(noiseHeight).map((_i) => _.randInt(0, 255) / 255)
+                )
+                const interpolator = bicubicGridInterpolator(points)
+
+                return (x, y) => {
+                    // scale sample-space to pointmap scale
+                    return interpolator(
+                        _.scale(x, 0, sampleWidth, 1, noiseWidth - 2),
+                        _.scale(y, 0, sampleHeight, 1, noiseHeight - 2)
+                    )
+                }
+            }
         </script>
         <script>
             class MonsterType extends Enum {
                 static Spider = new MonsterType()
                 static Cyclops = new MonsterType()
                 static Ghost = new MonsterType()
+
+                static {
+                    this.make()
+                }
+            }
+
+            class RockKind extends Enum {
+                static Surface = new MonsterType()
+                static Underground = new MonsterType()
 
                 static {
                     this.make()
@@ -658,6 +928,10 @@
                         i += 1
                     } while (i < upper * 10)
                     throw 'Failed to find a new random number'
+                }
+
+                add(x, y) {
+                    this.used.set(`${x}:${y}`, null)
                 }
 
                 random2d([lower, upper], [lower2, upper2]) {
@@ -869,6 +1143,7 @@
                 /** @type {?Path} */
                 path = null
                 waypoint = null
+                lastDamageKind = null
 
                 constructor({
                     x,
@@ -977,7 +1252,8 @@
                     console.info(this, 'entity died')
                 }
 
-                damage(damage) {
+                damage(damage, kind) {
+                    this.lastDamageKind = kind
                     this.health = _.clamp(
                         0,
                         this.maxHealth,
@@ -991,10 +1267,9 @@
                 setWaypoint(x, y) {
                     this.waypoint = [x, y]
                     try {
-                        this.path = astar(
+                        this.path = astarSimple(
                             [this.x, this.y],
                             this.waypoint,
-                            manhattan,
                             this.world
                         )
                     } catch (e) {
@@ -1009,10 +1284,9 @@
                     if (!this.waypoint) return
                     if (!this.path) return
                     try {
-                        this.path = astar(
+                        this.path = astarSimple(
                             [this.x, this.y],
                             this.waypoint,
-                            manhattan,
                             this.world
                         )
                     } catch (e) {
@@ -1200,9 +1474,12 @@
             }
 
             class Rocks extends Drawable {
-                constructor({ x, y, ctx }) {
+                kind
+
+                constructor({ x, y, ctx, kind }) {
                     super({ x, y, ctx })
                     this.rr = new ReproducibleRandom()
+                    this.kind = kind ?? RockKind.Surface
                 }
 
                 drawRock(ox, oy) {
@@ -1233,10 +1510,17 @@
                             c.lineTo(currX + x * scale, currY + y * scale)
                         }
 
-                        let h = 27
-                        let s = this.rr.randInt(20, 40)
-                        let l = this.rr.randInt(20, 50)
-                        c.fillStyle = `hsl(${h}, ${s}%, ${l}%)`
+                        if (this.kind === RockKind.Surface) {
+                            let h = 27
+                            let s = this.rr.randInt(20, 40)
+                            let l = this.rr.randInt(20, 50)
+                            c.fillStyle = `hsl(${h}, ${s}%, ${l}%)`
+                        } else {
+                            let h = 205
+                            let s = this.rr.randInt(30, 45)
+                            let l = this.rr.randInt(20, 30)
+                            c.fillStyle = `hsl(${h}, ${s}%, ${l}%)`
+                        }
                         c.fill()
                     })
                 }
@@ -1408,7 +1692,7 @@
 
                 collidedWith(other) {
                     if (other instanceof Player) {
-                        other.damage(this.calcDamage(other))
+                        other.damage(this.calcDamage(other), this)
                     }
                 }
 
@@ -1427,13 +1711,7 @@
 
                 draw() {
                     if (this.world.debug.mobPath) {
-                        for (let square of this.path?.remainingPath ?? []) {
-                            this.ctx.drawImage(
-                                AssetManager.assets.debugOverlay,
-                                square[0] * 64,
-                                square[1] * 64
-                            )
-                        }
+                        this.path?.drawRemaining(this.ctx)
                     }
                     super.draw()
                 }
@@ -1453,10 +1731,9 @@
                     // Find the player, and if they are close, close in
                     let pathToPlayer
                     try {
-                        pathToPlayer = astar(
+                        pathToPlayer = astarSimple(
                             [this.x, this.y],
                             [this.world.player.x, this.world.player.y],
-                            manhattan,
                             this.world
                         )
                     } catch {
@@ -1508,11 +1785,13 @@
                 /** @type {CanvasRenderingContext2D & My2dContext} */
                 ctx
                 tick = 0
+                // in cells
                 width
+                // in cells
                 height
                 randomPool = new RandomPool()
                 fow = false
-                level = 0
+                level
                 debug = {
                     mobPath: false,
                     drawGrid: false,
@@ -1529,12 +1808,12 @@
                     return this.alive
                 }
 
-                constructor(w, h, ctx, level = 0) {
+                constructor(w, h, ctx, level) {
                     super()
                     this.width = w
                     this.height = h
                     this.ctx = ctx
-                    this.level = level
+                    this.level = level ?? 0
                     let world = this
 
                     this.player = new Player({
@@ -1545,72 +1824,21 @@
                         x: this.width - 2,
                     })
 
-                    this.ground = _.map2d(
-                        this.width,
-                        this.height,
-                        (x, y) =>
-                            new Ground({ x, y, ctx, underground: level === 1 })
-                    )
-                    this.ground.forEach(
-                        (g) => (g.sprite = AssetManager.assets.ground[0])
-                    )
+                    this.ground = this.generateGround()
+                    this.trees = this.generateTrees()
 
-                    for (let _i in _.range(_.randInt(2, 3))) {
-                        let [x, y] = [
-                            _.randInt(0, this.width),
-                            _.randInt(0, this.height),
-                        ]
-                        // function ga (x, y) { return this.ground.find(g => g.x === x && g.y === y)}
-                        this.ground.find((g) => g.x === x && g.y === y).sprite =
-                            AssetManager.assets.ground[2]
-                        let offsets = [
-                            [
-                                [0, 0],
-                                [-1, 0],
-                                [-1, 1],
-                                [0, 1],
-                                [1, 1],
-                                [1, 0],
-                                [1, -1],
-                                [0, -1],
-                                [-1, -1],
-                                [2, 0],
-                                [0, 2],
-                                [-2, 0],
-                                [0, -2],
-                            ],
-                        ]
-
-                        for (let [xo, yo] of offsets[0]) {
-                            let aa = this.ground.find(
-                                (g) => g.x === x + xo && g.y === y + yo
-                            )
-                            if (aa) {
-                                aa.sprite = AssetManager.assets.ground[2]
-                            }
-                        }
-                    }
-
-                    this.trees = _.range(_.randInt(15, 24)).map(
-                        () =>
-                            new Tree({
-                                ctx,
-                                ...this.randomPool.random2d(
-                                    [0, this.width - 1],
-                                    [0, this.height - 1]
-                                ),
-                            })
-                    )
-                    this.rocks = _.range(_.randInt(15, 24)).map(
-                        () =>
-                            new Rocks({
-                                ctx,
-                                ...this.randomPool.random2d(
-                                    [0, this.width - 1],
-                                    [0, this.height - 1]
-                                ),
-                            })
-                    )
+                    this.rocks = this.generateRocks()
+                    // this.rocks = _.range(_.randInt(15, 24)).map(
+                    //     () =>
+                    //         new Rocks({
+                    //             ctx,
+                    //             ...this.randomPool.random2d(
+                    //                 [0, this.width - 1],
+                    //                 [0, this.height - 1]
+                    //             ),
+                    //             kind: this.level === 0 ? RockKind.Surface : RockKind.Underground
+                    //         })
+                    // )
                     this.door = new Door({
                         ctx,
                         ...this.randomPool.random2d(
@@ -1674,7 +1902,17 @@
                             ctx,
                             world,
                         }),
+                        new WandPowerup({
+                            ...this.randomPool.random2d(
+                                [0, this.width - 1],
+                                [0, this.height - 1]
+                            ),
+                            ctx,
+                            world,
+                        }),
                     ]
+
+                    this.openCriticalRoutes()
 
                     this.on(Signal.GameOver, () => {
                         this.alive = false
@@ -1696,6 +1934,255 @@
                     this.on(Signal.EquippedItem, (_signal, item) => {
                         $('#inventory-slot').src = item.sprite.asset.src
                     })
+                }
+
+                openCriticalRoutes() {
+                    let { player, door, width, height } = this
+
+                    function neighbors(pos) {
+                        return [
+                            [pos[0] - 1, pos[1]],
+                            [pos[0] + 1, pos[1]],
+                            [pos[0], pos[1] - 1],
+                            [pos[0], pos[1] + 1],
+                        ].filter(
+                            (a) =>
+                                a[0] >= 0 &&
+                                a[1] >= 0 &&
+                                a[0] < width &&
+                                a[1] < height
+                        )
+                    }
+
+                    let cost = (current, neighbor) => {
+                        let e = this.get(...neighbor)
+                        if (e && !(e instanceof Player)) {
+                            return 100
+                        }
+                        return 1
+                    }
+
+                    let randomCoords = [
+                        _.randInt(0, width),
+                        _.randInt(0, height),
+                    ]
+                    let doorCoords = [door.x, door.y]
+                    let playerCoords = [player.x, player.y]
+                    try {
+                        let playerToRandom = astar(
+                            playerCoords,
+                            randomCoords,
+                            manhattan,
+                            cost,
+                            neighbors,
+                            this,
+                            5000
+                        )
+                        let doorToRandom = astar(
+                            doorCoords,
+                            randomCoords,
+                            manhattan,
+                            cost,
+                            neighbors,
+                            this,
+                            5000
+                        )
+                        for (let cell of playerToRandom.totalPath) {
+                            let e = this.get(...cell)
+                            if (
+                                e &&
+                                (e instanceof Tree || e instanceof Rocks)
+                            ) {
+                                this.trees.removeElement(e)
+                                this.rocks.removeElement(e)
+                            }
+                        }
+                        for (let cell of doorToRandom.totalPath) {
+                            let e = this.get(...cell)
+                            if (
+                                e &&
+                                (e instanceof Tree || e instanceof Rocks)
+                            ) {
+                                this.trees.removeElement(e)
+                                this.rocks.removeElement(e)
+                            }
+                        }
+                        // path.drawRemaining(this.ctx)
+                        // console.log(path)
+                    } catch (e) {
+                        console.log(e)
+                    }
+                }
+
+                // Create nice ground patterns
+                generateGround() {
+                    let { ctx, level } = this
+                    let theGround
+
+                    // Completely random
+                    theGround = _.map2d(
+                        this.width,
+                        this.height,
+                        (x, y) =>
+                            new Ground({ x, y, ctx, underground: level === 1 })
+                    )
+                    // Too much noise in lower levels, don't generate any structure
+                    if (level === 1) return theGround
+                    // Make entire ground a 85%:15% split of plain:grass
+                    theGround.forEach(
+                        (g) =>
+                            (g.sprite =
+                                Math.random() > 0.85
+                                    ? AssetManager.assets.ground[1]
+                                    : AssetManager.assets.ground[0])
+                    )
+
+                    // Generate stone cells
+                    {
+                        let noise = bicubicNoiseHelper(
+                            10,
+                            10,
+                            this.width,
+                            this.height
+                        )
+                        theGround.map((g) => {
+                            if (Math.pow(noise(g.x, g.y), 4) > 0.3) {
+                                g.sprite = AssetManager.assets.ground[3]
+                            }
+                        })
+                    }
+
+                    // Generate flowers and grass around the flower patches
+                    {
+                        let noise = bicubicNoiseHelper(
+                            10,
+                            10,
+                            this.width,
+                            this.height
+                        )
+                        theGround.map((g) => {
+                            let { x, y } = g
+                            let v = noise(x, y)
+                            v = Math.pow(v, 4)
+
+                            if (v > 0.4) {
+                                g.sprite = AssetManager.assets.ground[2]
+                            } else if (v > 0.3) {
+                                g.sprite = AssetManager.assets.ground[1]
+                            }
+                        })
+                    }
+
+                    // Generate some patches of flowers
+                    for (let _i in _.range(_.randInt(3, 5))) {
+                        let [x, y] = [
+                            _.randInt(0, this.width - 1),
+                            _.randInt(0, this.height - 1),
+                        ]
+                        // Diamond shape
+                        let offsets = [
+                            [
+                                ..._.range(-1, 1 + 1)
+                                    .map((i) =>
+                                        _.range(-1, 1 + 1).map((j) => [i, j])
+                                    )
+                                    .flat(),
+                                [2, 0],
+                                [0, 2],
+                                [-2, 0],
+                                [0, -2],
+                            ],
+                        ]
+
+                        for (let [offX, offY] of offsets[0]) {
+                            let g = theGround.find(
+                                (g) => g.x === x + offX && g.y === y + offY
+                            )
+                            // Only generate some cells in the diamond
+                            if (g && Math.random() > 0.8) {
+                                g.sprite = AssetManager.assets.ground[2]
+                            }
+                        }
+                    }
+                    return theGround
+                }
+
+                generateTrees() {
+                    if (this.level === 0) {
+                        let trees = _.range(_.randInt(15, 24)).map(
+                            () =>
+                                new Tree({
+                                    ctx: this.ctx,
+                                    ...this.randomPool.random2d(
+                                        [0, this.width - 1],
+                                        [0, this.height - 1]
+                                    ),
+                                })
+                        )
+                        {
+                            let noise = bicubicNoiseHelper(
+                                10 * 1,
+                                10 * 1,
+                                this.width,
+                                this.height
+                            )
+                            _.map2d(this.width, this.height, (x, y) => {
+                                if (noise(x, y) > 0.8) {
+                                    trees.push(
+                                        new Tree({ x, y, ctx: this.ctx })
+                                    )
+                                    this.randomPool.add(x, y)
+                                }
+                            })
+                        }
+
+                        return trees
+                    } else {
+                        return []
+                    }
+                }
+
+                generateRocks() {
+                    let rocks = []
+                    for (let _i in _.range(_.randInt(3, 5))) {
+                        let [x, y] = [
+                            _.randInt(0, this.width - 1),
+                            _.randInt(0, this.height - 1),
+                        ]
+                        // Diamond shape
+                        let offsets = [
+                            [
+                                ..._.range(-1, 1 + 1)
+                                    .map((i) =>
+                                        _.range(-1, 1 + 1).map((j) => [i, j])
+                                    )
+                                    .flat(),
+                                [2, 0],
+                                [0, 2],
+                                [-2, 0],
+                                [0, -2],
+                            ],
+                        ]
+
+                        for (let [offX, offY] of offsets[0]) {
+                            // Only generate some cells in the diamond
+                            if (Math.random() > 0.6) {
+                                rocks.push(
+                                    new Rocks({
+                                        x: x + offX,
+                                        y: y + offY,
+                                        ctx: this.ctx,
+                                        kind:
+                                            this.level === 0
+                                                ? RockKind.Surface
+                                                : RockKind.Underground,
+                                    })
+                                )
+                                this.randomPool.add(x + offX, y + offY)
+                            }
+                        }
+                    }
+                    return rocks
                 }
 
                 cull() {
@@ -1842,6 +2329,17 @@
                                 (this.width * 64) / 2,
                                 (this.height * 64) / 3
                             )
+                            if (this.player.lastDamageKind instanceof Monster) {
+                                ctx.font = '5rem Arial'
+                                ctx.shadowColor = 'black'
+                                ctx.shadowBlur = 10
+                                ctx.fillStyle = 'white'
+                                ctx.fillText(
+                                    `Killed by: ${this.player.lastDamageKind.kind.name}`,
+                                    (this.width * 64) / 2,
+                                    ((this.height * 64) / 3) * 2
+                                )
+                            }
                             ctx.font = '4rem Arial'
                             ctx.shadowColor = 'black'
                             ctx.shadowBlur = 10
@@ -1875,6 +2373,7 @@
                     )
                     if (potion) return potion
                     if (this.door.x === x && this.door.y === y) return this.door
+                    return null
                 }
 
                 movePlayer(dx, dy) {
@@ -1974,14 +2473,16 @@
                             ]),
                         ])
                     )
+
+                    this.setupDebugUi(false)
                 }
 
                 async setup() {
                     await AssetManager.loadAll()
 
                     this.canvas = $('#root')
-                    this.canvas.width = this.WORLD_WIDTH * 64
-                    this.canvas.height = this.WORLD_HEIGHT * 64
+                    // this.canvas.width = this.WORLD_WIDTH * 64
+                    // this.canvas.height = this.WORLD_HEIGHT * 64
                     this.ctx = new My2dContext(
                         this.canvas.getContext('2d'),
                         this.canvas.width,
@@ -2044,262 +2545,431 @@
                         })
                     )
                 }
+
+                setupDebug() {
+                    let debug = window.location.search.endsWith('?debug')
+                    this.world.debug.drawGrid = debug
+                    this.world.debug.mobPath = debug
+                    this.world.redraw()
+
+                    this.setupDebugUi(debug)
+
+                    let listener = (e) => {
+                        function getCursorPosition(canvas, event) {
+                            // const rect = canvas.getBoundingClientRect()
+                            // const x = event.clientX - rect.left
+                            // const y = event.clientY - rect.top
+                            var b = canvas.getBoundingClientRect()
+                            var scale = canvas.width / parseFloat(b.width)
+                            var x = (event.clientX - b.left) * scale
+                            var y = (event.clientY - b.top) * scale
+                            return [x, y]
+                        }
+
+                        let [x, y] = getCursorPosition(this.canvas, e)
+                        let screen = [x, y]
+                        // x *= 1.75
+                        // y *= 1.75
+                        let canvasSpace = [x, y]
+                        x /= 64
+                        y /= 64
+                        x = Math.floor(x)
+                        y = Math.floor(y)
+                        console.info(
+                            `Click at screen: ${screen}, canvas: ${canvasSpace}, world: ${[
+                                x,
+                                y,
+                            ]}`
+                        )
+                        this.world.debug.gridClick?.call(null, x, y)
+
+                        this.world.redraw()
+                    }
+                    this.canvas.addEventListener('click', listener)
+                    this.destructors.push(() =>
+                        this.canvas.removeEventListener('click', listener)
+                    )
+                }
+
+                setupDebugUi(open) {
+                    let dbgPlacer = {
+                        onclick: (e) => {
+                            let { kind, species } =
+                                e.target.parentElement.dataset
+                            let { world } = this
+                            if (kind === 'tree') {
+                                world.debug.gridClick = (x, y) => {
+                                    world.trees.push(
+                                        new Tree({ x, y, ctx: world.ctx })
+                                    )
+                                }
+                            } else if (kind === 'rock') {
+                                world.debug.gridClick = (x, y) => {
+                                    world.rocks.push(
+                                        new Rocks({ x, y, ctx: world.ctx })
+                                    )
+                                }
+                            } else if (kind === 'ground') {
+                                world.debug.gridClick = (x, y) => {
+                                    world.ground.push(
+                                        new Ground({ x, y, ctx: world.ctx })
+                                    )
+                                }
+                            } else if (kind === 'underground') {
+                                world.debug.gridClick = (x, y) => {
+                                    world.ground.push(
+                                        new Ground({
+                                            x,
+                                            y,
+                                            ctx: world.ctx,
+                                            underground: true,
+                                        })
+                                    )
+                                }
+                            } else if (kind === 'monster') {
+                                world.debug.gridClick = (x, y) => {
+                                    world.monsters.push(
+                                        new Monster({
+                                            x,
+                                            y,
+                                            kind: MonsterType.named(species),
+                                            world,
+                                            ctx: world.ctx,
+                                        })
+                                    )
+                                }
+                            } else if (kind === 'selector') {
+                                world.debug.gridClick = (x, y) => {
+                                    let t = world.get(x, y)
+                                    let c = world.debug.selectedEntity
+                                    if (t) {
+                                        if (t === c) {
+                                            c = null
+                                            return
+                                        }
+                                    }
+                                    if (c instanceof Monster) {
+                                        c.waypoint = [x, y]
+                                        c.path = astarSimple(
+                                            [c.x, c.y],
+                                            [x, y],
+                                            world
+                                        )
+                                        return
+                                    }
+                                    world.debug.selectedEntity = t
+                                }
+                            }
+                        },
+                    }
+
+                    let debugEditor = h('div', [
+                        'Debug Editor:',
+                        h('div', [
+                            h(
+                                'button',
+                                { 'data-kind': 'selector', ...dbgPlacer },
+                                [
+                                    h('img', {
+                                        src: AssetManager.assets.debugOverlay
+                                            .asset.src,
+                                        width: 32,
+                                    }),
+                                ]
+                            ),
+                            h('button', { 'data-kind': 'tree', ...dbgPlacer }, [
+                                h('img', {
+                                    src: AssetManager.assets.debugTree.asset
+                                        .src,
+                                    width: 32,
+                                }),
+                            ]),
+                            h('button', { 'data-kind': 'rock', ...dbgPlacer }, [
+                                h('img', {
+                                    src: AssetManager.assets.debugRocks.asset
+                                        .src,
+                                    width: 32,
+                                }),
+                            ]),
+                            h(
+                                'button',
+                                { 'data-kind': 'ground', ...dbgPlacer },
+                                [
+                                    h('img', {
+                                        src: AssetManager.assets.ground[1].asset
+                                            .src,
+                                        width: 32,
+                                    }),
+                                ]
+                            ),
+                            h(
+                                'button',
+                                { 'data-kind': 'underground', ...dbgPlacer },
+                                [
+                                    h('img', {
+                                        src: AssetManager.assets.underground[0]
+                                            .asset.src,
+                                        width: 32,
+                                    }),
+                                ]
+                            ),
+                            ...[...MonsterType].map((monster) =>
+                                h(
+                                    'button',
+                                    {
+                                        'data-kind': 'monster',
+                                        'data-species': monster.name,
+                                        ...dbgPlacer,
+                                    },
+                                    [
+                                        h('img', {
+                                            src: AssetManager.assets.monsters[
+                                                monster
+                                            ].asset.src,
+                                            width: 32,
+                                        }),
+                                    ]
+                                )
+                            ),
+                        ]),
+                    ])
+                    $('#ui-root').replaceWith(
+                        h('div#ui-root', [
+                            h('details', { open: open }, [
+                                h('summary{Debug}'),
+                                h('input', {
+                                    type: 'checkbox',
+                                    id: 'fog-of-war',
+                                    onclick: (e) =>
+                                        (this.world.fow = e.target.checked),
+                                    $checked: this.world.fow,
+                                }),
+                                h('label{Fog of War}', { for: 'fog-of-war' }),
+                                h('br'),
+                                h('input', {
+                                    type: 'checkbox',
+                                    id: 'mobPaths',
+                                    onclick: (e) => {
+                                        this.world.debug.mobPath =
+                                            e.target.checked
+                                        this.world.redraw()
+                                    },
+                                    $checked: this.world.debug.mobPath,
+                                }),
+                                h('label{Show Enemy Paths}', {
+                                    for: 'mobPaths',
+                                }),
+                                h('br'),
+                                h('input', {
+                                    type: 'checkbox',
+                                    id: 'showGrid',
+                                    onclick: (e) => {
+                                        this.world.debug.drawGrid =
+                                            e.target.checked
+                                        this.world.redraw()
+                                    },
+                                    $checked: this.world.debug.drawGrid,
+                                }),
+                                h('label{Show Grid}', { for: 'showGrid' }),
+                                h('br'),
+                                h('input', {
+                                    type: 'checkbox',
+                                    id: 'idleMove',
+                                    onclick: (e) => {
+                                        this.world.debug.idleMoveMobs =
+                                            e.target.checked
+                                    },
+                                    $checked: this.world.debug.idleMoveMobs,
+                                }),
+                                h('label{Idle Move Mobs}', { for: 'idleMove' }),
+                                h('br'),
+                                h('input', {
+                                    type: 'checkbox',
+                                    id: 'idleWaypoint',
+                                    onclick: (e) => {
+                                        this.world.debug.idleWaypointUpdate =
+                                            e.target.checked
+                                    },
+                                    $checked:
+                                        this.world.debug.idleWaypointUpdate,
+                                }),
+                                h('label{Idle Update Waypoints}', {
+                                    for: 'idleWaypoint',
+                                }),
+                                debugEditor,
+                                h('button{New Waypoints}', {
+                                    onclick: () => {
+                                        this.world.updateWaypoints()
+                                        this.world.redraw()
+                                    },
+                                }),
+                                h('br'),
+                                h('button{Move Mobs}', {
+                                    onclick: () => {
+                                        this.world.moveMonsters()
+                                        this.world.redraw()
+                                    },
+                                }),
+                                h('br'),
+                                h('button{Reset}', {
+                                    onclick: () => {
+                                        this.createNewWorld()
+                                    },
+                                }),
+                            ]),
+                        ])
+                    )
+                }
             }
 
             let universe = new Universe()
             universe
                 .setup()
                 .then(() => universe.createNewWorld())
-                .then(() => setupDebug(universe))
+                .then(() => universe.setupDebug())
 
-            function setupDebug(universe) {
-                console.log(universe)
-                let debug = window.location.search.endsWith('?debug')
-                    ? true
-                    : undefined
-                universe.world.debug.drawGrid = debug
-                universe.world.debug.mobPath = debug
-                universe.world.redraw()
-
-                let dbgPlacer = {
-                    onclick: (e) => {
-                        let { kind, species } = e.target.parentElement.dataset
-                        let { world } = universe
-                        if (kind === 'tree') {
-                            world.debug.gridClick = (x, y) => {
-                                world.trees.push(
-                                    new Tree({ x, y, ctx: world.ctx })
-                                )
-                            }
-                        } else if (kind === 'rock') {
-                            world.debug.gridClick = (x, y) => {
-                                world.rocks.push(
-                                    new Rocks({ x, y, ctx: world.ctx })
-                                )
-                            }
-                        } else if (kind === 'ground') {
-                            world.debug.gridClick = (x, y) => {
-                                world.ground.push(
-                                    new Ground({ x, y, ctx: world.ctx })
-                                )
-                            }
-                        } else if (kind === 'underground') {
-                            world.debug.gridClick = (x, y) => {
-                                world.ground.push(
-                                    new Ground({
-                                        x,
-                                        y,
-                                        ctx: world.ctx,
-                                        underground: true,
-                                    })
-                                )
-                            }
-                        } else if (kind === 'monster') {
-                            world.debug.gridClick = (x, y) => {
-                                world.monsters.push(
-                                    new Monster({
-                                        x,
-                                        y,
-                                        kind: MonsterType.named(species),
-                                        world,
-                                        ctx: world.ctx,
-                                    })
-                                )
-                            }
-                        } else if (kind === 'selector') {
-                            world.debug.gridClick = (x, y) => {
-                                let t = world.get(x, y)
-                                let c = world.debug.selectedEntity
-                                if (t) {
-                                    if (t === c) {
-                                        c = null
-                                        return
-                                    }
-                                }
-                                if (c instanceof Monster) {
-                                    c.waypoint = [x, y]
-                                    c.path = astar(
-                                        [c.x, c.y],
-                                        [x, y],
-                                        manhattan,
-                                        world
-                                    )
-                                    return
-                                }
-                                world.debug.selectedEntity = t
-                            }
-                        }
-                    },
-                }
-
-                let debugEditor = h('div', [
-                    'Debug Editor:',
-                    h('div', [
-                        h('button', { 'data-kind': 'selector', ...dbgPlacer }, [
-                            h('img', {
-                                src: AssetManager.assets.debugOverlay.asset.src,
-                                width: 32,
-                            }),
-                        ]),
-                        h('button', { 'data-kind': 'tree', ...dbgPlacer }, [
-                            h('img', {
-                                src: AssetManager.assets.debugTree.asset.src,
-                                width: 32,
-                            }),
-                        ]),
-                        h('button', { 'data-kind': 'rock', ...dbgPlacer }, [
-                            h('img', {
-                                src: AssetManager.assets.debugRocks.asset.src,
-                                width: 32,
-                            }),
-                        ]),
-                        h('button', { 'data-kind': 'ground', ...dbgPlacer }, [
-                            h('img', {
-                                src: AssetManager.assets.ground[1].asset.src,
-                                width: 32,
-                            }),
-                        ]),
-                        h(
-                            'button',
-                            { 'data-kind': 'underground', ...dbgPlacer },
-                            [
-                                h('img', {
-                                    src: AssetManager.assets.underground[0]
-                                        .asset.src,
-                                    width: 32,
-                                }),
-                            ]
-                        ),
-                        ...[...MonsterType].map((monster) =>
-                            h(
-                                'button',
-                                {
-                                    'data-kind': 'monster',
-                                    'data-species': monster.name,
-                                    ...dbgPlacer,
-                                },
-                                [
-                                    h('img', {
-                                        src: AssetManager.assets.monsters[
-                                            monster
-                                        ].asset.src,
-                                        width: 32,
-                                    }),
-                                ]
-                            )
-                        ),
-                    ]),
-                ])
-                $('#ui-root').appendChild(
-                    h('details', { open: debug }, [
-                        h('summary{Debug}'),
-                        h('input', {
-                            type: 'checkbox',
-                            id: 'fog-of-war',
-                            onclick: (e) =>
-                                (universe.world.fow = e.target.checked),
-                        }),
-                        h('label{Fog of War}', { for: 'fog-of-war' }),
-                        h('br'),
-                        h('input', {
-                            type: 'checkbox',
-                            id: 'mobPaths',
-                            onclick: (e) => {
-                                universe.world.debug.mobPath = e.target.checked
-                                universe.world.redraw()
-                            },
-                            checked: debug,
-                        }),
-                        h('label{Show Enemy Paths}', { for: 'mobPaths' }),
-                        h('br'),
-                        h('input', {
-                            type: 'checkbox',
-                            id: 'showGrid',
-                            onclick: (e) => {
-                                universe.world.debug.drawGrid = e.target.checked
-                                universe.world.redraw()
-                            },
-                            checked: debug,
-                        }),
-                        h('label{Show Grid}', { for: 'showGrid' }),
-                        h('br'),
-                        h('input', {
-                            type: 'checkbox',
-                            id: 'idleMove',
-                            onclick: (e) => {
-                                universe.world.debug.idleMoveMobs =
-                                    e.target.checked
-                            },
-                            checked: debug,
-                        }),
-                        h('label{Idle Move Mobs}', { for: 'idleMove' }),
-                        h('br'),
-                        h('input', {
-                            type: 'checkbox',
-                            id: 'idleWaypoint',
-                            onclick: (e) => {
-                                universe.world.debug.idleWaypointUpdate =
-                                    e.target.checked
-                            },
-                            checked: debug,
-                        }),
-                        h('label{Idle Update Waypoints}', {
-                            for: 'idleWaypoint',
-                        }),
-                        debugEditor,
-                        h('button{New Waypoints}', {
-                            onclick: () => {
-                                universe.world.updateWaypoints()
-                                universe.world.redraw()
-                            },
-                        }),
-                        h('br'),
-                        h('button{Move Mobs}', {
-                            onclick: () => {
-                                universe.world.moveMonsters()
-                                universe.world.redraw()
-                            },
-                        }),
-                        h('br'),
-                        h('button{Reset}', {
-                            onclick: () => {
-                                universe.createNewWorld()
-                            },
-                        }),
-                    ])
+            function disabled1() {
+                let canvas = $('#root')
+                /** @type {CanvasRenderingContext2D} */
+                let ctx = canvas.getContext('2d')
+                ctx.imageSmoothingEnabled = false
+                let n = 3
+                let pointmapWidth = 10
+                let pointmapHeight = 10
+                let numCellsWide = (canvas.width / 8) | 0
+                let numCellsTall = (canvas.height / 8) | 0
+                let points = _.range(pointmapHeight).map((_i) =>
+                    _.range(pointmapWidth).map((_i) => _.randInt(0, 255) / 255)
                 )
+                for (let _n of _.range(n)) {
+                    let x = _.randInt(0, numCellsWide)
+                    let y = _.randInt(0, numCellsTall)
 
-                let listener = (e) => {
-                    function getCursorPosition(canvas, event) {
-                        const rect = canvas.getBoundingClientRect()
-                        const x = event.clientX - rect.left
-                        const y = event.clientY - rect.top
-                        return [x, y]
+                    ctx.fillStyle = 'red'
+                    // ctx.fillRect(x*8, y*8, 8, 8)
+                    // points[Math.round(_.scale(y, 0, numCellsTall, 0, pointmapHeight-1))][Math.round(_.scale(x, 0, numCellsWide, 0, pointmapWidth-1))]=1
+                    // console.log([Math.round(_.scale(y, 0, numCellsTall, 0, pointmapHeight-1))],[Math.round(_.scale(x, 0, numCellsWide, 0, pointmapWidth-1))])
+                }
+                // const interpolator = bicubic.createInterpolator(points)
+                // const interpolator = bicubic.createGridInterpolator(points)
+                const interpolator = bicubicGridInterpolator(points)
+                console.log(points)
+                console.log(interpolator)
+
+                _.map2d(numCellsWide, numCellsTall, (x, y) => {
+                    try {
+                        let v = interpolator(
+                            _.scale(x, 0, numCellsWide, 1, pointmapWidth - 2),
+                            _.scale(y, 0, numCellsTall, 1, pointmapHeight - 2)
+                        )
+                        // v=  Math.log(v)+1
+                        v = Math.pow(v, 4)
+                        v = v < 0.2 ? 0 : 1
+                        console.log(x, y, v)
+                        ctx.fillStyle = `rgb(0,255,0,${v * 255}%`
+                        ctx.fillRect(x * 8, y * 8, 8, 8)
+                    } catch (e) {
+                        console.log(e)
                     }
-
-                    let [x, y] = getCursorPosition(universe.canvas, e)
-                    let screen = [x, y]
-                    x *= 2
-                    y *= 2
-                    let canvasSpace = []
-                    x /= 64
-                    y /= 64
-                    x = Math.floor(x)
-                    y = Math.floor(y)
-                    console.info(`Click at`, {
-                        screen,
-                        canvas: canvasSpace,
-                        world: [x, y],
-                    })
-                    universe.world.debug.gridClick?.call(null, x, y)
-
-                    universe.world.redraw()
-                }
-                universe.canvas.addEventListener('click', listener)
-                universe.destructors.push(() =>
-                    universe.canvas.removeEventListener('click', listener)
-                )
+                })
+                // for (let i of _.range(numCellsWide)) {
+                //     for (let j of _.range(numCellsTall)) {
+                //         // let v = points[i][j]
+                //         try {
+                //
+                //             let v = Math.pow(interpolator(
+                //                 _.scale(i,0, numCellsWide, 1, 1),
+                //                 _.scale(j,0, numCellsTall, 1, 1 )
+                //             ), 4)
+                //             // console.log(i,j,v)
+                //             ctx.fillStyle=`rgb(0,255,0,${v*255}%`
+                //             ctx.fillRect(i*8,j*8, 8, 8)
+                //         } catch (e){console.log(e)}
+                //     }
             }
+
+            // disabled1()
+
+            async function disabled2() {
+                let { default: WorleyNoise } = await import(
+                    'https://esm.sh/worley-noise@2.0.0'
+                )
+                let canvas = $('#root')
+                /** @type {CanvasRenderingContext2D} */
+                let ctx = canvas.getContext('2d')
+                ctx.imageSmoothingEnabled = false
+
+                var noise = new WorleyNoise({
+                    numPoints: 50,
+                    /*seed: 42,*/
+                    /*dim: 3,*/
+                })
+
+                let numCellsWide = (canvas.width / 8) | 0
+                let numCellsTall = (canvas.height / 8) | 0
+                let max = Number.NEGATIVE_INFINITY
+                let min = Number.POSITIVE_INFINITY
+                _.map2d(numCellsWide, numCellsTall, (xc, yc) => {
+                    // try {
+                    let x = _.scale(xc, 0, numCellsWide, 0, 1)
+                    let y = _.scale(yc, 0, numCellsTall, 0, 1)
+                    let v = noise.getEuclidean({ x, y }, 1)
+                    // v=  Math.sqrt(v)
+                    v = Math.pow(v, 3 / 4)
+                    if (v > max) {
+                        max = v
+                    }
+                    if (v < min) {
+                        min = v
+                    }
+                })
+                let out = []
+                // _.map2d(numCellsWide, numCellsTall, (xc, yc) => {
+                //     // try {
+                //         let x = _.scale(xc, 0, numCellsWide, 0, 1)
+                //         let y = _.scale(yc, 0, numCellsTall, 0, 1)
+                //         let v = noise.getEuclidean({x, y}, 1)
+                //     v=  Math.sqrt(v)
+                //     // console.log(xc)
+                //     let sv = _.scale(v, min, max, 0, 1)
+                //     // sv = sv < 128 ? 0 : svolet
+                //     sv = Math.pow(sv, 3)
+                //     sv = _.scale(sv, 0, 1, 0, 255)
+                //     // sv = sv > 128 ? 0 : sv
+                //     // let sv = (v- min) *(1/(max-min))
+                //         ctx.fillStyle = `rgb(${sv}, ${sv}, ${sv}, 100%)`
+                //         ctx.fillRect(xc * 8, yc* 8, 8, 8)
+                //     // } catch (e) {
+                //     //     console.log(e)
+                //     // }
+                // })
+                for (let _n in _.range(1)) {
+                    _.map2d(numCellsWide, numCellsTall, (xc, yc) => {
+                        // try {
+                        let x = _.scale(xc, 0, numCellsWide, 0, 1)
+                        let y = _.scale(yc, 0, numCellsTall, 0, 1)
+                        let v = noise.getEuclidean({ x, y }, 1)
+                        // v = Math.sqrt(v)
+                        // console.log(xc)
+                        let sv = _.scale(v, min, max, 0, 1)
+                        // sv = sv < 128 ? 0 : sv
+                        // sv = Math.pow(sv, 3)
+                        // sv = _.scale(sv, 0, 1, 0, 255)
+                        // sv = sv > 128 ? 0 : sv
+                        // let sv = (v- min) *(1/(max-min))
+                        // ctx.fillStyle = `rgb(${sv}, ${sv}, ${sv}, 100%)`
+                        ctx.fillStyle = 'red'
+                        if (Math.random() * sv > 0.4) {
+                            ctx.fillRect(xc * 8, yc * 8, 8, 8)
+                        }
+                        // } catch (e) {
+                        //     console.log(e)
+                        // }
+                    })
+                }
+            }
+
+            // disabled2()
         </script>
         <style>
             canvas {
