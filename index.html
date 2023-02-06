@@ -15,6 +15,14 @@
             main {
                 text-align: center;
             }
+
+            .pixels {
+                image-rendering: pixelated;
+            }
+
+            canvas {
+                border: solid black 1px;
+            }
         </style>
     </head>
     <body>
@@ -25,12 +33,11 @@
                 width="1280"
                 height="1024"
             ></canvas>
-            <!--        <canvas id="root" style="width: 80px; height: 80px" width="80" height="80"></canvas>-->
             <div id="ui-inventory"></div>
             <div id="ui-root"></div>
         </main>
         <script>
-            // libHackson
+            // libJackson
 
             Object.defineProperty(Array.prototype, 'removeElement', {
                 value: function (target) {
@@ -73,12 +80,16 @@
             _.zip = function () {
                 let out = []
                 let arr = Array.from(arguments)
-                for (let i in _.range(Math.max(...arr.map((a) => a.length)))) {
+                for (
+                    let i = 0;
+                    i < Math.max(...arr.map((a) => a.length));
+                    i++
+                ) {
                     out.push(arr.map((a) => a[i]))
                 }
                 return out
             }
-            // from a to b or from 0 to a
+            // from a up to b or from 0 to a
             _.range = function range(a, b) {
                 if (b) {
                     let step = a > b ? -1 : 1
@@ -94,11 +105,19 @@
                     return x.map((a) => y.map((b) => fn(a, b))).flat()
                 }
             }
+            // Inclusive
             _.randInt = (lower, upper) =>
                 lower + Math.floor(Math.random() * (upper - lower + 1))
+            // -1 to 1
             _.urandom = () => Math.random() * 2 - 1
             _.clamp = (lower, upper, val) =>
                 Math.max(Math.min(upper, val), lower)
+            _.signedPow = (base, exponent) => {
+                return base >= 0
+                    ? Math.pow(base, exponent)
+                    : Math.pow(base, exponent) * -1
+            }
+            // Normal Distribution
             _.ndRandom = (min, max, skew) => {
                 let u = Math.random(),
                     v = Math.random()
@@ -211,7 +230,8 @@
             function parseAll(str, parsers) {
                 let results = {}
                 for (let parser of parsers) {
-                    var [data, str] = parser(str)
+                    let data
+                    ;[data, str] = parser(str)
 
                     if (data !== null) {
                         let { type, val } = data
@@ -397,7 +417,7 @@
                 }
 
                 let open = [start]
-                let closed = []
+                let closed = new Map()
                 let cameFrom = {}
 
                 let gScore = {}
@@ -428,9 +448,9 @@
                     }
 
                     open.removeElement(current)
-                    closed.push(current)
+                    closed.set(current.toString(), null)
                     for (let neighbor of neighbors(current)) {
-                        if (_.contains(closed, neighbor)) {
+                        if (closed.has(neighbor.toString())) {
                             gas -= 1
                             continue
                         }
@@ -788,7 +808,7 @@
                 static Left = new Direction()
                 static Right = new Direction()
                 // static Up = new Direction()
-                // static Down = new Direction()
+                // static Down = new Direction() continue
 
                 static {
                     this.make()
@@ -924,7 +944,15 @@
                             this.used.set(r, null)
                             return r
                         }
-                        console.log(r, ' failed', i, this.used, lower, upper)
+                        console.warn(
+                            'Random pool iteration failed: ',
+                            r,
+                            ' failed',
+                            i,
+                            this.used,
+                            lower,
+                            upper
+                        )
                         i += 1
                     } while (i < upper * 10)
                     throw 'Failed to find a new random number'
@@ -1273,7 +1301,7 @@
                             this.world
                         )
                     } catch (e) {
-                        console.log('Pathing failed', e)
+                        console.warn('Pathing failed', e)
                         this.path = null
                         this.waypoint = null
                     }
@@ -1290,7 +1318,7 @@
                             this.world
                         )
                     } catch (e) {
-                        console.log('Repathing failed', e)
+                        console.warn('Repathing failed', e)
                         this.path = null
                         this.waypoint = null
                     }
@@ -1803,6 +1831,11 @@
                 alive = true
                 goingToDoor = false
                 cleared = false
+                ground = []
+                trees = []
+                rocks = []
+                monsters = []
+                powerups = []
 
                 get running() {
                     return this.alive
@@ -1823,22 +1856,12 @@
                         world,
                         x: this.width - 2,
                     })
+                    this.randomPool.add(this.player.x, this.player.y)
 
                     this.ground = this.generateGround()
                     this.trees = this.generateTrees()
 
                     this.rocks = this.generateRocks()
-                    // this.rocks = _.range(_.randInt(15, 24)).map(
-                    //     () =>
-                    //         new Rocks({
-                    //             ctx,
-                    //             ...this.randomPool.random2d(
-                    //                 [0, this.width - 1],
-                    //                 [0, this.height - 1]
-                    //             ),
-                    //             kind: this.level === 0 ? RockKind.Surface : RockKind.Underground
-                    //         })
-                    // )
                     this.door = new Door({
                         ctx,
                         ...this.randomPool.random2d(
@@ -1936,9 +1959,12 @@
                     })
                 }
 
+                // Picks a random point, then paths from the player to the point, and then the point to another POI going through entities
+                // If the only path is through an entity, remove it
                 openCriticalRoutes() {
                     let { player, door, width, height } = this
 
+                    // Neighbors, but don't remove occupied cells
                     function neighbors(pos) {
                         return [
                             [pos[0] - 1, pos[1]],
@@ -1954,10 +1980,11 @@
                         )
                     }
 
+                    // We really don't want to go through entities, but we will if we have to
                     let cost = (current, neighbor) => {
                         let e = this.get(...neighbor)
                         if (e && !(e instanceof Player)) {
-                            return 100
+                            return 1000
                         }
                         return 1
                     }
@@ -1987,6 +2014,8 @@
                             this,
                             5000
                         )
+                        playerToRandom.drawRemaining(this.ctx)
+                        doorToRandom.drawRemaining(this.ctx)
                         for (let cell of playerToRandom.totalPath) {
                             let e = this.get(...cell)
                             if (
@@ -2007,10 +2036,8 @@
                                 this.rocks.removeElement(e)
                             }
                         }
-                        // path.drawRemaining(this.ctx)
-                        // console.log(path)
                     } catch (e) {
-                        console.log(e)
+                        console.warn(e)
                     }
                 }
 
@@ -2146,8 +2173,8 @@
                     let rocks = []
                     for (let _i in _.range(_.randInt(3, 5))) {
                         let [x, y] = [
-                            _.randInt(0, this.width - 1),
-                            _.randInt(0, this.height - 1),
+                            this.randomPool.randInt(0, this.width - 1),
+                            this.randomPool.randInt(0, this.height - 1),
                         ]
                         // Diamond shape
                         let offsets = [
@@ -2164,13 +2191,16 @@
                             ],
                         ]
 
-                        for (let [offX, offY] of offsets[0]) {
+                        for (let [xOff, yOff] of offsets[0]) {
                             // Only generate some cells in the diamond
+                            let rx = x + xOff
+                            let ry = y + yOff
                             if (Math.random() > 0.6) {
+                                if (this.get(rx, ry)) continue
                                 rocks.push(
                                     new Rocks({
-                                        x: x + offX,
-                                        y: y + offY,
+                                        x: rx,
+                                        y: ry,
                                         ctx: this.ctx,
                                         kind:
                                             this.level === 0
@@ -2178,7 +2208,7 @@
                                                 : RockKind.Underground,
                                     })
                                 )
-                                this.randomPool.add(x + offX, y + offY)
+                                this.randomPool.add(rx, ry)
                             }
                         }
                     }
@@ -2372,7 +2402,8 @@
                         (potion) => potion.x === x && potion.y === y
                     )
                     if (potion) return potion
-                    if (this.door.x === x && this.door.y === y) return this.door
+                    if (this.door?.x === x && this.door?.y === y)
+                        return this.door
                     return null
                 }
 
@@ -2388,7 +2419,8 @@
                     let { player } = this
                     player.equipped?.use(player, this)
                     player.equipped = null
-                    $('#inventory-slot').removeAttribute('src')
+                    $('#inventory-slot').src =
+                        AssetManager.assets.debugOverlay.asset.src
                 }
 
                 repathMonsters() {
@@ -2556,9 +2588,6 @@
 
                     let listener = (e) => {
                         function getCursorPosition(canvas, event) {
-                            // const rect = canvas.getBoundingClientRect()
-                            // const x = event.clientX - rect.left
-                            // const y = event.clientY - rect.top
                             var b = canvas.getBoundingClientRect()
                             var scale = canvas.width / parseFloat(b.width)
                             var x = (event.clientX - b.left) * scale
@@ -2659,6 +2688,17 @@
                                     }
                                     world.debug.selectedEntity = t
                                 }
+                            } else if (kind === 'delete') {
+                                world.debug.gridClick = (x, y) => {
+                                    let t = world.get(x, y)
+                                    if (t instanceof Entity) {
+                                        t.die()
+                                    } else if (t instanceof Tree) {
+                                        this.world.trees.removeElement(t)
+                                    } else if (t instanceof Rocks) {
+                                        this.world.rocks.removeElement(t)
+                                    }
+                                }
                             }
                         },
                     }
@@ -2713,6 +2753,18 @@
                                     }),
                                 ]
                             ),
+                            h(
+                                'button',
+                                { 'data-kind': 'delete', ...dbgPlacer },
+                                [
+                                    'Delete',
+                                    h('img', {
+                                        src: AssetManager.assets.debugOverlay
+                                            .asset.src,
+                                        width: 32,
+                                    }),
+                                ]
+                            ),
                             ...[...MonsterType].map((monster) =>
                                 h(
                                     'button',
@@ -2735,7 +2787,7 @@
                     ])
                     $('#ui-root').replaceWith(
                         h('div#ui-root', [
-                            h('details', { open: open }, [
+                            h('details', { $open: open }, [
                                 h('summary{Debug}'),
                                 h('input', {
                                     type: 'checkbox',
@@ -2827,158 +2879,6 @@
                 .setup()
                 .then(() => universe.createNewWorld())
                 .then(() => universe.setupDebug())
-
-            function disabled1() {
-                let canvas = $('#root')
-                /** @type {CanvasRenderingContext2D} */
-                let ctx = canvas.getContext('2d')
-                ctx.imageSmoothingEnabled = false
-                let n = 3
-                let pointmapWidth = 10
-                let pointmapHeight = 10
-                let numCellsWide = (canvas.width / 8) | 0
-                let numCellsTall = (canvas.height / 8) | 0
-                let points = _.range(pointmapHeight).map((_i) =>
-                    _.range(pointmapWidth).map((_i) => _.randInt(0, 255) / 255)
-                )
-                for (let _n of _.range(n)) {
-                    let x = _.randInt(0, numCellsWide)
-                    let y = _.randInt(0, numCellsTall)
-
-                    ctx.fillStyle = 'red'
-                    // ctx.fillRect(x*8, y*8, 8, 8)
-                    // points[Math.round(_.scale(y, 0, numCellsTall, 0, pointmapHeight-1))][Math.round(_.scale(x, 0, numCellsWide, 0, pointmapWidth-1))]=1
-                    // console.log([Math.round(_.scale(y, 0, numCellsTall, 0, pointmapHeight-1))],[Math.round(_.scale(x, 0, numCellsWide, 0, pointmapWidth-1))])
-                }
-                // const interpolator = bicubic.createInterpolator(points)
-                // const interpolator = bicubic.createGridInterpolator(points)
-                const interpolator = bicubicGridInterpolator(points)
-                console.log(points)
-                console.log(interpolator)
-
-                _.map2d(numCellsWide, numCellsTall, (x, y) => {
-                    try {
-                        let v = interpolator(
-                            _.scale(x, 0, numCellsWide, 1, pointmapWidth - 2),
-                            _.scale(y, 0, numCellsTall, 1, pointmapHeight - 2)
-                        )
-                        // v=  Math.log(v)+1
-                        v = Math.pow(v, 4)
-                        v = v < 0.2 ? 0 : 1
-                        console.log(x, y, v)
-                        ctx.fillStyle = `rgb(0,255,0,${v * 255}%`
-                        ctx.fillRect(x * 8, y * 8, 8, 8)
-                    } catch (e) {
-                        console.log(e)
-                    }
-                })
-                // for (let i of _.range(numCellsWide)) {
-                //     for (let j of _.range(numCellsTall)) {
-                //         // let v = points[i][j]
-                //         try {
-                //
-                //             let v = Math.pow(interpolator(
-                //                 _.scale(i,0, numCellsWide, 1, 1),
-                //                 _.scale(j,0, numCellsTall, 1, 1 )
-                //             ), 4)
-                //             // console.log(i,j,v)
-                //             ctx.fillStyle=`rgb(0,255,0,${v*255}%`
-                //             ctx.fillRect(i*8,j*8, 8, 8)
-                //         } catch (e){console.log(e)}
-                //     }
-            }
-
-            // disabled1()
-
-            async function disabled2() {
-                let { default: WorleyNoise } = await import(
-                    'https://esm.sh/worley-noise@2.0.0'
-                )
-                let canvas = $('#root')
-                /** @type {CanvasRenderingContext2D} */
-                let ctx = canvas.getContext('2d')
-                ctx.imageSmoothingEnabled = false
-
-                var noise = new WorleyNoise({
-                    numPoints: 50,
-                    /*seed: 42,*/
-                    /*dim: 3,*/
-                })
-
-                let numCellsWide = (canvas.width / 8) | 0
-                let numCellsTall = (canvas.height / 8) | 0
-                let max = Number.NEGATIVE_INFINITY
-                let min = Number.POSITIVE_INFINITY
-                _.map2d(numCellsWide, numCellsTall, (xc, yc) => {
-                    // try {
-                    let x = _.scale(xc, 0, numCellsWide, 0, 1)
-                    let y = _.scale(yc, 0, numCellsTall, 0, 1)
-                    let v = noise.getEuclidean({ x, y }, 1)
-                    // v=  Math.sqrt(v)
-                    v = Math.pow(v, 3 / 4)
-                    if (v > max) {
-                        max = v
-                    }
-                    if (v < min) {
-                        min = v
-                    }
-                })
-                let out = []
-                // _.map2d(numCellsWide, numCellsTall, (xc, yc) => {
-                //     // try {
-                //         let x = _.scale(xc, 0, numCellsWide, 0, 1)
-                //         let y = _.scale(yc, 0, numCellsTall, 0, 1)
-                //         let v = noise.getEuclidean({x, y}, 1)
-                //     v=  Math.sqrt(v)
-                //     // console.log(xc)
-                //     let sv = _.scale(v, min, max, 0, 1)
-                //     // sv = sv < 128 ? 0 : svolet
-                //     sv = Math.pow(sv, 3)
-                //     sv = _.scale(sv, 0, 1, 0, 255)
-                //     // sv = sv > 128 ? 0 : sv
-                //     // let sv = (v- min) *(1/(max-min))
-                //         ctx.fillStyle = `rgb(${sv}, ${sv}, ${sv}, 100%)`
-                //         ctx.fillRect(xc * 8, yc* 8, 8, 8)
-                //     // } catch (e) {
-                //     //     console.log(e)
-                //     // }
-                // })
-                for (let _n in _.range(1)) {
-                    _.map2d(numCellsWide, numCellsTall, (xc, yc) => {
-                        // try {
-                        let x = _.scale(xc, 0, numCellsWide, 0, 1)
-                        let y = _.scale(yc, 0, numCellsTall, 0, 1)
-                        let v = noise.getEuclidean({ x, y }, 1)
-                        // v = Math.sqrt(v)
-                        // console.log(xc)
-                        let sv = _.scale(v, min, max, 0, 1)
-                        // sv = sv < 128 ? 0 : sv
-                        // sv = Math.pow(sv, 3)
-                        // sv = _.scale(sv, 0, 1, 0, 255)
-                        // sv = sv > 128 ? 0 : sv
-                        // let sv = (v- min) *(1/(max-min))
-                        // ctx.fillStyle = `rgb(${sv}, ${sv}, ${sv}, 100%)`
-                        ctx.fillStyle = 'red'
-                        if (Math.random() * sv > 0.4) {
-                            ctx.fillRect(xc * 8, yc * 8, 8, 8)
-                        }
-                        // } catch (e) {
-                        //     console.log(e)
-                        // }
-                    })
-                }
-            }
-
-            // disabled2()
         </script>
-        <style>
-            canvas {
-                border: solid black 1px;
-            }
-
-            .pixels {
-                image-rendering: pixelated;
-            }
-        </style>
     </body>
 </html>
